@@ -126,20 +126,20 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   if (name === "list_templates") {
     const res = await client.get<Template[]>("/api/templates");
     const items = res.data;
-
+  
     const text =
       items
         .map((t) => {
-          const id = t._id;
+          const id = t._id?.toString?.() ?? "(no id)";
           const name = t.name || "(unnamed)";
           const type = t.type || "(no type)";
           const subType = t.sub_type ? ` / ${t.sub_type}` : "";
-          const fields = t.fields.join(", ");
-
+          const fields = Array.isArray(t.fields) ? t.fields.join(", ") : "";
+  
           return `• ${name} (${id})\n  Type: ${type}${subType}\n  Fields: ${fields}`;
         })
         .join("\n\n") || "No templates found.";
-
+  
     return { content: [{ type: "text", text }] };
   }
 
