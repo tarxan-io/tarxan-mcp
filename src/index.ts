@@ -3,233 +3,157 @@
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import {
-    CallToolRequestSchema,
-    ListToolsRequestSchema,
+  CallToolRequestSchema,
+  ListToolsRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
-import { connect, StringCodec, NatsConnection } from "nats";
-import mongoose, { Schema, model } from "mongoose";
+import axios from "axios";
 
+// ─────────────────────────────────────────────────────────────
 // Configuration
-const NATS_URL = process.env.NATS_URL || "nats://localhost:4222";
-const MONGO_URL = process.env.MONGO_URL || "mongodb://localhost:27017/tarxan";
-const sc = StringCodec();
+// ─────────────────────────────────────────────────────────────
 
-// Mongoose Schema
-const TemplateSchema = new Schema({
-    name: { type: String, required: true },
-    path: { type: String, required: true },
-    fields: { type: [String], required: true },
-    type: { type: String, required: true },
-    sub_type: { type: String, required: false },
-    require_subdomain: { type: Boolean, required: true },
-    require_custom_subdomain: { type: Boolean, required: true },
-    published_at: { type: Date, required: false },
-    created_at: { type: Date, required: true, default: Date.now },
-    updated_at: { type: Date, required: false },
-}, {
-    versionKey: false,
-    collection: "templates" 
-});
-  
-const TemplateModel = model("Template", TemplateSchema);
+const API_BASE = process.env.API_BASE || "http://localhost:7890";
+const API_KEY = process.env.API_KEY;
+if (!API_KEY) throw new Error("Missing required API_KEY environment variable");
 
-// Zod Schemas
+// ─────────────────────────────────────────────────────────────
+// Types
+// ─────────────────────────────────────────────────────────────
+
+interface Template {
+  _id: string;
+  name: string;
+  path: string;
+  fields: string[];
+  type: string;
+  sub_type?: string;
+  require_subdomain: boolean;
+  require_custom_subdomain: boolean;
+  published_at?: string;
+  created_at: string;
+  updated_at?: string;
+}
+
+// ─────────────────────────────────────────────────────────────
+// Zod Schemas for Tool Validation
+// ─────────────────────────────────────────────────────────────
+
 const DeploySchema = z.object({
-    user_id: z.string(),
-    template_id: z.string(),
-    creds: z.any(),
+  template_id: z.string(),
+  creds: z.any(),
 });
 
 const DeleteSchema = z.object({
-    server_id: z.string(),
+  server_id: z.string(),
 });
 
-const ToolRequestSchema = z.object({
-    name: z.string(),
-    arguments: z.optional(z.any()),
-    resource: z.optional(z.object({
-        type: z.string().optional(),
-        id: z.string().optional(),
-        attributes: z.record(z.any()).optional(),
-    })),
-});
+// ─────────────────────────────────────────────────────────────
+// MCP Server Setup
+// ─────────────────────────────────────────────────────────────
 
-// MCP Server
 const server = new Server(
-    {
-        name: "tarxan-mcp",
-        version: "0.0.0",
-    },
-    {
-        capabilities: {
-            tools: {},
-        },
-    }
+  { name: "tarxan-mcp", version: "1.0.0" },
+  { capabilities: { tools: {} } }
 );
 
+// Define tools
 server.setRequestHandler(ListToolsRequestSchema, async () => ({
-    tools: [
-        {
-            name: "deploy",
-            description: "Trigger a deploy action via NATS (by ID or name)",
-            inputSchema: {
-                type: "object",
-                properties: {
-                    user_id: { type: "string", description: "User ID" },
-                    template_id: { type: "string", description: "Template ID (optional if name is given)" },
-                    name: { type: "string", description: "Template name (optional if ID is given)" },
-                    creds: { type: "object", description: "Credential object" },
-                },
-                required: ["user_id", "creds"],
-            },
+  tools: [
+    {
+      name: "deploy",
+      description: "Deploy a server using a template ID and credentials",
+      inputSchema: {
+        type: "object",
+        properties: {
+          template_id: { type: "string", description: "ID of the template to deploy" },
+          creds: { type: "object", description: "Credential payload" },
         },
-        {
-            name: "delete",
-            description: "Trigger a delete action via NATS",
-            inputSchema: {
-                type: "object",
-                properties: {
-                    server_id: { type: "string", description: "Server ID" },
-                },
-                required: ["server_id"],
-            },
+        required: ["template_id", "creds"],
+      },
+    },
+    {
+      name: "delete",
+      description: "Delete a server by ID",
+      inputSchema: {
+        type: "object",
+        properties: {
+          server_id: { type: "string", description: "Server ID to delete" },
         },
-        {
-            name: "list_templates",
-            description: "List available deployment templates",
-            inputSchema: {
-                type: "object",
-                properties: {},
-            },
-        },
-    ],
+        required: ["server_id"],
+      },
+    },
+    {
+      name: "list_templates",
+      description: "List available deployment templates",
+      inputSchema: {
+        type: "object",
+        properties: {},
+      },
+    },
+  ],
 }));
 
-let nats: NatsConnection;
-
+// Tool Execution Handler
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
-    const { name, arguments: args, resource } = ToolRequestSchema.parse(request.params);
-    const data = args ?? resource?.attributes;
-    if (!data) throw new Error("Missing input (arguments or resource)");
-    if (!nats) throw new Error("NATS connection not established");
+  const { name, arguments: args } = request.params;
 
-    if (name === "deploy") {
-        let payload: z.infer<typeof DeploySchema>;
-        const parsed = DeploySchema.safeParse(data);
+  const client = axios.create({
+    baseURL: API_BASE,
+    headers: { "x-api-key": API_KEY },
+  });
 
-        if (parsed.success) {
-            payload = parsed.data;
-        } else {
-            const { name, creds, user_id } = data as any;
-            if (!name || !user_id || !creds) {
-                throw new Error(
-                    `Invalid arguments: ${parsed.error.errors
-                        .map((e) => `${e.path.join(".")}: ${e.message}`)
-                        .join(", ")}`
-                );
-            }
+  if (name === "deploy") {
+    const body = DeploySchema.parse(args);
+    await client.post("/api/servers", body);
+    return {
+      content: [
+        { type: "text", text: `✅ Deployment triggered for template ID: ${body.template_id}` },
+      ],
+    };
+  }
 
-            const found = await TemplateModel.findOne({
-                name: { $regex: new RegExp(name, "i") },
-            });
+  if (name === "delete") {
+    const { server_id } = DeleteSchema.parse(args);
+    await client.delete(`/api/servers/${server_id}`);
+    return {
+      content: [
+        { type: "text", text: `🗑️ Server ${server_id} deleted successfully` },
+      ],
+    };
+  }
 
-            if (!found) throw new Error(`No template found matching name: ${name}`);
+  if (name === "list_templates") {
+    const res = await client.get<Template[]>("/api/templates");
+    const items = res.data;
 
-            payload = {
-                user_id,
-                template_id: found.id,
-                creds,
-            };
-        }
+    const text =
+      items
+        .map((t) => {
+          const id = t._id;
+          const name = t.name || "(unnamed)";
+          const type = t.type || "(no type)";
+          const subType = t.sub_type ? ` / ${t.sub_type}` : "";
+          const fields = t.fields.join(", ");
 
-        await nats.publish("deploy", sc.encode(JSON.stringify(payload)));
+          return `• ${name} (${id})\n  Type: ${type}${subType}\n  Fields: ${fields}`;
+        })
+        .join("\n\n") || "No templates found.";
 
-        return {
-            content: [
-                {
-                    type: "text",
-                    text: `Deploy event published for user ${payload.user_id} using template ${payload.template_id}`,
-                },
-            ],
-        };
-    }
+    return { content: [{ type: "text", text }] };
+  }
 
-    if (name === "delete") {
-        const payload = DeleteSchema.parse(data);
-        await nats.publish("delete", sc.encode(JSON.stringify(payload)));
-
-        return {
-            content: [
-                {
-                    type: "text",
-                    text: `Delete event published for server ${payload.server_id}`,
-                },
-            ],
-        };
-    }
-
-    if (name === "list_templates") {
-        const templates = await TemplateModel.find().lean();
-
-        console.log("=========================");
-        console.log(JSON.stringify(templates, null, 2));
-        console.log("=========================");
-        
-        return {
-            content: [
-                {
-                    type: "text",
-                    text: templates
-                        .map((t) => {
-                            const id = t._id?.toString();
-                            const name = t.name || "(unnamed)";
-                            const fields = Array.isArray(t.fields) ? t.fields.join(", ") : "";
-                            const type = t.type || "(no type)";
-                            const subType = t.sub_type ? ` / ${t.sub_type}` : "";
-    
-                            return `• ${name} (${id})\n  Type: ${type}${subType}\n  Fields: ${fields}`;
-                        })
-                        .join("\n\n") || "No templates found.",
-                },
-            ],
-        };
-    }
-
-    throw new Error(`Unknown tool: ${name}`);
+  throw new Error(`Unknown tool: ${name}`);
 });
+
+// ─────────────────────────────────────────────────────────────
+// Boot the MCP Server
+// ─────────────────────────────────────────────────────────────
 
 async function run() {
-    try {
-        await mongoose.connect(MONGO_URL);
-        console.error(`[MongoDB Connected] ${MONGO_URL}`);
-
-        nats = await connect({ servers: NATS_URL });
-        console.error(`[NATS Connected] ${NATS_URL}`);
-
-        const transport = new StdioServerTransport();
-        await server.connect(transport);
-        console.error("[MCP Server] Ready on stdio");
-    } catch (err) {
-        console.error("[Fatal] MCP server failed to start:", err);
-        process.exit(1);
-    }
+  const transport = new StdioServerTransport();
+  await server.connect(transport);
+  console.error("[Tarxan MCP] Ready on stdio using REST API backend");
 }
-
-process.on("SIGINT", async () => {
-    await Promise.all([
-        nats?.drain().catch(() => {}),
-        mongoose.connection.close().catch(() => {}),
-    ]);
-    process.exit(0);
-});
-
-process.on("SIGTERM", async () => {
-    await Promise.all([
-        nats?.drain().catch(() => {}),
-        mongoose.connection.close().catch(() => {}),
-    ]);
-    process.exit(0);
-});
 
 run();
