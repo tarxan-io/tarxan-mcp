@@ -170,7 +170,11 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
     if (name === "list_templates") {
         const templates = await TemplateModel.find().lean();
-    
+
+        console.log("=========================");
+        console.log(JSON.stringify(templates, null, 2));
+        console.log("=========================");
+        
         return {
             content: [
                 {
