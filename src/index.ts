@@ -17,11 +17,20 @@ const sc = StringCodec();
 
 // Mongoose Schema
 const TemplateSchema = new Schema({
-    id: { type: String, required: true },
     name: { type: String, required: true },
-    description: { type: String },
+    path: { type: String, required: true },
+    fields: { type: [String], required: true },
+    type: { type: String, required: true },
+    sub_type: { type: String, required: false },
+    require_subdomain: { type: Boolean, required: true },
+    require_custom_subdomain: { type: Boolean, required: true },
+    published_at: { type: Date, required: false },
+    created_at: { type: Date, required: true, default: Date.now },
+    updated_at: { type: Date, required: false },
+}, {
+    versionKey: false
 });
-
+  
 const TemplateModel = model("Template", TemplateSchema);
 
 // Zod Schemas
@@ -161,19 +170,22 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
     if (name === "list_templates") {
         const templates = await TemplateModel.find().lean();
-
+    
         return {
             content: [
                 {
                     type: "text",
                     text: templates
-                        .map(
-                            (t) =>
-                                `• ${t.name} (${t.id})${
-                                    t.description ? ` – ${t.description}` : ""
-                                }`
-                        )
-                        .join("\n"),
+                        .map((t) => {
+                            const id = t._id?.toString();
+                            const name = t.name || "(unnamed)";
+                            const fields = Array.isArray(t.fields) ? t.fields.join(", ") : "";
+                            const type = t.type || "(no type)";
+                            const subType = t.sub_type ? ` / ${t.sub_type}` : "";
+    
+                            return `• ${name} (${id})\n  Type: ${type}${subType}\n  Fields: ${fields}`;
+                        })
+                        .join("\n\n") || "No templates found.",
                 },
             ],
         };
