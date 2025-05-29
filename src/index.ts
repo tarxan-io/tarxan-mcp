@@ -8,23 +8,23 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import { connect, StringCodec, NatsConnection } from "nats";
+import mongoose, { Schema, model } from "mongoose";
 
 // Configuration
 const NATS_URL = process.env.NATS_URL || "nats://localhost:4222";
+const MONGO_URL = process.env.MONGO_URL || "mongodb://localhost:27017/tarxan";
 const sc = StringCodec();
 
-// Type definitions
-type ToolRequestParams = {
-    name: string;
-    arguments?: unknown;
-    resource?: {
-        type?: string;
-        id?: string;
-        attributes?: Record<string, unknown>;
-    };
-};
+// Mongoose Schema
+const TemplateSchema = new Schema({
+    id: { type: String, required: true },
+    name: { type: String, required: true },
+    description: { type: String },
+});
 
-// Schemas
+const TemplateModel = model("Template", TemplateSchema);
+
+// Zod Schemas
 const DeploySchema = z.object({
     user_id: z.string(),
     template_id: z.string(),
@@ -35,22 +35,17 @@ const DeleteSchema = z.object({
     server_id: z.string(),
 });
 
-const TemplateSchema = z.object({
-    id: z.string(),
+const ToolRequestSchema = z.object({
     name: z.string(),
-    description: z.string().optional(),
+    arguments: z.optional(z.any()),
+    resource: z.optional(z.object({
+        type: z.string().optional(),
+        id: z.string().optional(),
+        attributes: z.record(z.any()).optional(),
+    })),
 });
 
-const TemplatesResponseSchema = z.array(TemplateSchema);
-
-// Hardcoded example templates
-const templates = [
-    { id: "tpl-mongo", name: "MongoDB Server", description: "Basic MongoDB stack" },
-    { id: "tpl-gpt", name: "Basic GPT Server", description: "A basic inference stack" },
-    { id: "tpl-scraper", name: "Scraper + Storage", description: "Web scraper with data sink" },
-];
-
-// Server
+// MCP Server
 const server = new Server(
     {
         name: "tarxan-mcp",
@@ -63,7 +58,6 @@ const server = new Server(
     }
 );
 
-// List available tools
 server.setRequestHandler(ListToolsRequestSchema, async () => ({
     tools: [
         {
@@ -102,116 +96,99 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     ],
 }));
 
-// Main handler
-server.setRequestHandler(CallToolRequestSchema, async (request) => {
-    const { name, arguments: args, resource } = request.params as ToolRequestParams;
-
-    if (!nats) throw new Error("NATS connection not established");
-
-    try {
-        if (name === "deploy") {
-            const data = args ?? resource?.attributes;
-            if (!data) throw new Error("Missing deployment input (arguments or resource)");
-
-            // Try standard schema first
-            const parsed = DeploySchema.safeParse(data);
-
-            let payload: z.infer<typeof DeploySchema>;
-
-            if (parsed.success) {
-                payload = parsed.data;
-            } else {
-                // Try to fallback to name-based resolution
-                const { name, creds, user_id } = data as any;
-                if (!name || !user_id || !creds) {
-                    throw new Error(
-                        `Invalid arguments: ${parsed.error.errors
-                            .map((e) => `${e.path.join(".")}: ${e.message}`)
-                            .join(", ")}`
-                    );
-                }
-
-                const found = templates.find((t) =>
-                    t.name.toLowerCase().includes(name.toLowerCase())
-                );
-                if (!found) throw new Error(`No template found matching name: ${name}`);
-
-                payload = {
-                    user_id,
-                    template_id: found.id,
-                    creds,
-                };
-            }
-
-            await nats.publish("deploy", sc.encode(JSON.stringify(payload)));
-
-            return {
-                content: [
-                    {
-                        type: "text",
-                        text: `Deploy event published for user ${payload.user_id} using template ${payload.template_id}`,
-                    },
-                ],
-            };
-        }
-
-        if (name === "delete") {
-            const data = args ?? resource?.attributes;
-            if (!data) throw new Error("Missing deletion input (arguments or resource)");
-
-            const payload = DeleteSchema.parse(data);
-            await nats.publish("delete", sc.encode(JSON.stringify(payload)));
-
-            return {
-                content: [
-                    {
-                        type: "text",
-                        text: `Delete event published for server ${payload.server_id}`,
-                    },
-                ],
-            };
-        }
-
-        if (name === "list_templates") {
-            const validated = TemplatesResponseSchema.parse(templates);
-            return {
-                content: [
-                    {
-                        type: "text",
-                        text: validated
-                            .map(
-                                (t) =>
-                                    `• ${t.name} (${t.id})${
-                                        t.description ? ` – ${t.description}` : ""
-                                    }`
-                            )
-                            .join("\n"),
-                    },
-                ],
-            };
-        }
-
-        throw new Error(`Unknown tool: ${name}`);
-    } catch (err) {
-        if (err instanceof z.ZodError) {
-            throw new Error(
-                `Invalid arguments: ${err.errors
-                    .map((e) => `${e.path.join(".")}: ${e.message}`)
-                    .join(", ")}`
-            );
-        }
-        throw err;
-    }
-});
-
 let nats: NatsConnection;
 
-async function run() {
-    console.log(NATS_URL);
+server.setRequestHandler(CallToolRequestSchema, async (request) => {
+    const { name, arguments: args, resource } = ToolRequestSchema.parse(request.params);
+    const data = args ?? resource?.attributes;
+    if (!data) throw new Error("Missing input (arguments or resource)");
+    if (!nats) throw new Error("NATS connection not established");
 
+    if (name === "deploy") {
+        let payload: z.infer<typeof DeploySchema>;
+        const parsed = DeploySchema.safeParse(data);
+
+        if (parsed.success) {
+            payload = parsed.data;
+        } else {
+            const { name, creds, user_id } = data as any;
+            if (!name || !user_id || !creds) {
+                throw new Error(
+                    `Invalid arguments: ${parsed.error.errors
+                        .map((e) => `${e.path.join(".")}: ${e.message}`)
+                        .join(", ")}`
+                );
+            }
+
+            const found = await TemplateModel.findOne({
+                name: { $regex: new RegExp(name, "i") },
+            });
+
+            if (!found) throw new Error(`No template found matching name: ${name}`);
+
+            payload = {
+                user_id,
+                template_id: found.id,
+                creds,
+            };
+        }
+
+        await nats.publish("deploy", sc.encode(JSON.stringify(payload)));
+
+        return {
+            content: [
+                {
+                    type: "text",
+                    text: `Deploy event published for user ${payload.user_id} using template ${payload.template_id}`,
+                },
+            ],
+        };
+    }
+
+    if (name === "delete") {
+        const payload = DeleteSchema.parse(data);
+        await nats.publish("delete", sc.encode(JSON.stringify(payload)));
+
+        return {
+            content: [
+                {
+                    type: "text",
+                    text: `Delete event published for server ${payload.server_id}`,
+                },
+            ],
+        };
+    }
+
+    if (name === "list_templates") {
+        const templates = await TemplateModel.find().lean();
+
+        return {
+            content: [
+                {
+                    type: "text",
+                    text: templates
+                        .map(
+                            (t) =>
+                                `• ${t.name} (${t.id})${
+                                    t.description ? ` – ${t.description}` : ""
+                                }`
+                        )
+                        .join("\n"),
+                },
+            ],
+        };
+    }
+
+    throw new Error(`Unknown tool: ${name}`);
+});
+
+async function run() {
     try {
+        await mongoose.connect(MONGO_URL);
+        console.error(`[MongoDB Connected] ${MONGO_URL}`);
+
         nats = await connect({ servers: NATS_URL });
-        console.error(`[NATS Connected] Connected to ${NATS_URL}`);
+        console.error(`[NATS Connected] ${NATS_URL}`);
 
         const transport = new StdioServerTransport();
         await server.connect(transport);
@@ -223,12 +200,18 @@ async function run() {
 }
 
 process.on("SIGINT", async () => {
-    await nats?.drain().catch(() => {});
+    await Promise.all([
+        nats?.drain().catch(() => {}),
+        mongoose.connection.close().catch(() => {}),
+    ]);
     process.exit(0);
 });
 
 process.on("SIGTERM", async () => {
-    await nats?.drain().catch(() => {});
+    await Promise.all([
+        nats?.drain().catch(() => {}),
+        mongoose.connection.close().catch(() => {}),
+    ]);
     process.exit(0);
 });
 
