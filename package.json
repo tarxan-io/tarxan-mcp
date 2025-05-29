@@ -1,0 +1,33 @@
+{
+    "name": "@tarxan/server-mcp",
+    "version": "0.1.0",
+    "description": "Tarxan MCP server for deploying and deleting services via NATS",
+    "license": "MIT",
+    "author": "Tarxan",
+    "homepage": "https://tarxan.io",
+    "bugs": "https://github.com/tarxan/server-mcp/issues",
+    "type": "module",
+    "bin": {
+      "tarxan-mcp": "dist/index.js"
+    },
+    "files": [
+      "dist"
+    ],
+    "scripts": {
+      "build": "tsc && shx chmod +x dist/*.js",
+      "prepare": "npm run build",
+      "watch": "tsc --watch"
+    },
+    "dependencies": {
+      "@modelcontextprotocol/sdk": "^1.7.0",
+      "nats": "^2.29.3",
+      "nats.ws": "^1.30.3",
+      "zod": "^3.22.4"
+    },
+    "devDependencies": {
+      "@types/node": "^22.10.2",
+      "shx": "^0.3.4",
+      "typescript": "^5.7.2"
+    }
+  }
+  
