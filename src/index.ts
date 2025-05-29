@@ -31,7 +31,7 @@ const TemplateSchema = new Schema({
     versionKey: false
 });
   
-const TemplateModel = model("Template", TemplateSchema);
+const TemplateModel = model("Template", TemplateSchema, "templates");
 
 // Zod Schemas
 const DeploySchema = z.object({
