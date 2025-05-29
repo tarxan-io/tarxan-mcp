@@ -20,6 +20,7 @@
     },
     "dependencies": {
         "@modelcontextprotocol/sdk": "^1.7.0",
+        "mongoose": "^8.15.1",
         "nats": "^2.29.3",
         "nats.ws": "^1.30.3",
         "zod": "^3.22.4"
