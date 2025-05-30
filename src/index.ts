@@ -60,16 +60,34 @@ const server = new Server(
 // Define tools
 server.setRequestHandler(ListToolsRequestSchema, async () => ({
   tools: [
+    // {
+    //   name: "deploy",
+    //   description: "Deploy a server using a template ID and credentials",
+    //   inputSchema: {
+    //     type: "object",
+    //     properties: {
+    //       template_name: { type: "string", description: "ID of the template to deploy" },
+    //       template_creds: { type: "object", description: "Credential payload" },
+    //     },
+    //     required: ["template_id"],
+    //   },
+    // },
     {
       name: "deploy",
-      description: "Deploy a server using a template ID and credentials",
+      description: "Deploy a server using a template name and credentials",
       inputSchema: {
         type: "object",
         properties: {
-          template_id: { type: "string", description: "ID of the template to deploy" },
-          creds: { type: "object", description: "Credential payload" },
+          template_name: {
+            type: "string",
+            description: "Name of the template to deploy",
+          },
+          template_creds: {
+            type: "object",
+            description: "Credential payload (optional)",
+          },
         },
-        required: ["template_id"],
+        required: ["template_name"],
       },
     },
     {
@@ -103,12 +121,54 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     headers: { "x-api-key": API_KEY },
   });
 
+  // if (name === "deploy") {
+  //   const body = DeploySchema.parse(args);
+  //   await client.post("/api/servers", body);
+  //   return {
+  //     content: [
+  //       { type: "text", text: `✅ Deployment triggered for template ID: ${body.template_id}` },
+  //     ],
+  //   };
+  // }
+
   if (name === "deploy") {
-    const body = DeploySchema.parse(args);
-    await client.post("/api/servers", body);
+    // Pull template_name and creds from args
+    const { template_name, template_creds } = z
+      .object({
+        template_name: z.string(),
+        template_creds: z.any().optional(),
+      })
+      .parse(args);
+  
+    // Fetch available templates
+    const templatesRes = await client.get("/api/templates");
+    const templates = templatesRes.data as Template[];
+  
+    // Find the template by name
+    const template = templates.find(t => t.name === template_name);
+    if (!template) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `❌ Template not found: ${template_name}`,
+          },
+        ],
+      };
+    }
+  
+    // Send deployment request
+    await client.post("/api/servers", {
+      template_id: template._id,
+      creds: template_creds,
+    });
+  
     return {
       content: [
-        { type: "text", text: `✅ Deployment triggered for template ID: ${body.template_id}` },
+        {
+          type: "text",
+          text: `✅ Deployment triggered for: ${template_name} (ID: ${template._id})`,
+        },
       ],
     };
   }
@@ -126,10 +186,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   if (name === "list_templates") {
     const res = await client.get<Template[]>("/api/templates");
     const items = res.data;
-
-    console.log("-----------------------")
-    console.log(JSON.stringify(items, null, 2));
-    console.log("-----------------------")
   
     const text =
       items
