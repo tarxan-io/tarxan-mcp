@@ -69,7 +69,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           template_id: { type: "string", description: "ID of the template to deploy" },
           creds: { type: "object", description: "Credential payload" },
         },
-        required: ["template_id", "creds"],
+        required: ["template_id"],
       },
     },
     {
