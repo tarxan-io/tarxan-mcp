@@ -126,6 +126,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   if (name === "list_templates") {
     const res = await client.get<Template[]>("/api/templates");
     const items = res.data;
+
+    console.log("-----------------------")
+    console.log(JSON.stringify(items, null, 2));
+    console.log("-----------------------")
   
     const text =
       items
