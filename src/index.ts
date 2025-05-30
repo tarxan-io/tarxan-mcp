@@ -22,7 +22,7 @@ if (!API_KEY) throw new Error("Missing required API_KEY environment variable");
 // ─────────────────────────────────────────────────────────────
 
 interface Template {
-  _id: string;
+  id: string;
   name: string;
   path: string;
   fields: string[];
@@ -159,7 +159,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   
     // Send deployment request
     await client.post("/api/servers", {
-      template_id: template._id,
+      template_id: template.id,
       creds: template_creds,
     });
   
@@ -167,7 +167,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       content: [
         {
           type: "text",
-          text: `✅ Deployment triggered for: ${template_name} (ID: ${template._id})`,
+          text: `✅ Deployment triggered for: ${template_name} (ID: ${template.id})`,
         },
       ],
     };
@@ -190,7 +190,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const text =
       items
         .map((t) => {
-          const id = t._id?.toString?.() ?? "(no id)";
+          const id = t.id?.toString?.() ?? "(no id)";
           const name = t.name || "(unnamed)";
           const type = t.type || "(no type)";
           const subType = t.sub_type ? ` / ${t.sub_type}` : "";
